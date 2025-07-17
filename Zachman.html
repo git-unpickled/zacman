@@ -1,0 +1,773 @@
+<script type="text/javascript">
+        var gk_isXlsx = false;
+        var gk_xlsxFileLookup = {};
+        var gk_fileData = {};
+        function filledCell(cell) {
+          return cell !== '' && cell != null;
+        }
+        function loadFileData(filename) {
+        if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
+            try {
+                var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
+                var firstSheetName = workbook.SheetNames[0];
+                var worksheet = workbook.Sheets[firstSheetName];
+
+                // Convert sheet to JSON to filter blank rows
+                var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
+                // Filter out blank rows (rows where all cells are empty, null, or undefined)
+                var filteredData = jsonData.filter(row => row.some(filledCell));
+
+                // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
+                var headerRowIndex = filteredData.findIndex((row, index) =>
+                  row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
+                );
+                // Fallback
+                if (headerRowIndex === -1 || headerRowIndex > 25) {
+                  headerRowIndex = 0;
+                }
+
+                // Convert filtered JSON back to CSV
+                var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
+                csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
+                return csv;
+            } catch (e) {
+                console.error(e);
+                return "";
+            }
+        }
+        return gk_fileData[filename] || "";
+        }
+        </script><!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pac-Man (Mobile)</title>
+    <style>
+        body {
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 10px; /* Keep canvas away from edges */
+            background-color: #000;
+            font-family: Arial, sans-serif;
+            overflow: hidden;
+        }
+        canvas {
+            border: 2px solid white;
+            max-width: 100%;
+            max-height: 60vh;
+        }
+        .controls {
+            display: flex;
+            align-items: center;
+            margin-top: 5px;
+        }
+        .jump-button {
+            width: 50px;
+            height: 50px;
+            background-color: #ff4444;
+            border: 2px solid white;
+            border-radius: 50%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-size: 20px;
+            color: white;
+            cursor: pointer;
+            touch-action: none;
+            margin-right: 10px; /* Gap between jump button and D-pad */
+        }
+        .jump-button:disabled {
+            background-color: #222;
+            color: #666;
+            cursor: not-allowed;
+        }
+        .dpad-container {
+            position: relative;
+            width: 120px;
+            height: 120px;
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            align-items: center;
+        }
+        .dpad-btn {
+            position: absolute;
+            width: 40px;
+            height: 40px;
+            background-color: #00cc00; /* Green buttons */
+            border: 2px solid white;
+            border-radius: 8px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-size: 16px;
+            color: white;
+            cursor: pointer;
+            touch-action: none;
+            transition: transform 0.1s ease, background-color 0.1s ease;
+        }
+        .dpad-btn.active {
+            background-color: #00aa00; /* Darker green when pressed */
+            transform: scale(1.1); /* Slight scale on press */
+        }
+        .dpad-btn.up {
+            top: 0;
+            left: 50%;
+            transform: translateX(-50%);
+        }
+        .dpad-btn.down {
+            bottom: 0;
+            left: 50%;
+            transform: translateX(-50%);
+        }
+        .dpad-btn.left {
+            left: 0;
+            top: 50%;
+            transform: translateY(-50%);
+        }
+        .dpad-btn.right {
+            right: 0;
+            top: 50%;
+            transform: translateY(-50%);
+        }
+    </style>
+</head>
+<body>
+    <canvas id="gameCanvas" width="320" height="480"></canvas>
+    <div class="controls">
+        <div class="jump-button" id="jumpBtn">J</div>
+        <div class="dpad-container">
+            <div class="dpad-btn up" id="dpadUp">↑</div>
+            <div class="dpad-btn down" id="dpadDown">↓</div>
+            <div class="dpad-btn left" id="dpadLeft">←</div>
+            <div class="dpad-btn right" id="dpadRight">→</div>
+        </div>
+    </div>
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+
+        // Constants
+        const SCREEN_WIDTH = 320;
+        const SCREEN_HEIGHT = 480;
+        const FPS = 60;
+
+        // Colors
+        const BLACK = '#000000';
+        const YELLOW = '#FFFF00';
+        const WHITE = '#FFFFFF';
+        const RED = '#FF0000';
+        const BLUE = '#0000FF';
+        const CYAN = '#00FFFF';
+        const PINK = '#FF69B4';
+
+        // Sounds (base64-encoded WAVs)
+        const CHOMP_SOUND = new Audio('data:audio/wav;base64,UklGRiYAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YSQAAAAAAP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/');
+        const HONK_SOUND = new Audio('data:audio/wav;base64,UklGRj4AAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YSgAAAAA/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/');
+
+        // Maze (18x27)
+        const MAZE = [
+            "##################",
+            "#................#",
+            "#.####.####.####.#",
+            "#.#  #.#  #.#  #.#",
+            "#.#  #.#  #.#  #.#",
+            "#.####.####.####.#",
+            "#................#",
+            "#.####.#..#..#.#.#",
+            "#.#  #.#..#..#.#.#",
+            "#.#  #.#..#..#.#.#",
+            "#.####.#..#..#.#.#",
+            "#................#",
+            "#.####.####.####.#",
+            "#.#  #.#  #.#  #.#",
+            "#.#  #.#  #.#  #.#",
+            "#.####.####.####.#",
+            "#................#",
+            "#.####.#..#..#.#.#",
+            "#.#  #.#..#..#.#.#",
+            "#.#  #.#..#..#.#.#",
+            "#.####.#..#..#.#.#",
+            "#................#",
+            "#.####.####.####.#",
+            "#.#  #.#  #.#  #.#",
+            "#.#  #.#  #.#  #.#",
+            "#.####.####.####.#",
+            "#................#",
+            "##################"
+        ];
+
+        class PacMan {
+            constructor(x, y, tileSize) {
+                this.x = x * tileSize;
+                this.y = y * tileSize;
+                this.direction = [0, 0];
+                this.nextDirection = [0, 0];
+                this.baseSpeed = 2;
+                this.speed = 0; // Stationary unless moving
+                this.radius = tileSize * 0.49; // Larger to fill maze lanes
+                this.frame = 0;
+                this.tileSize = tileSize;
+                this.isJumping = false;
+                this.jumpFrame = 0;
+                this.isColliding = false;
+                this.collisionFrame = 0;
+                console.log(`Pac-Man initialized with radius: ${this.radius}`);
+            }
+
+            move(maze, ghosts) {
+                if (this.isColliding) {
+                    this.collisionFrame++;
+                    if (this.collisionFrame >= 30) { // ~0.5 seconds at 60 FPS
+                        this.isColliding = false;
+                        this.collisionFrame = 0;
+                        console.log('Pac-Man collision animation complete');
+                    }
+                    return true; // Game over
+                }
+
+                if (this.isJumping) {
+                    this.jumpFrame++;
+                    if (this.jumpFrame >= 45) { // ~0.75 seconds at 60 FPS
+                        this.isJumping = false;
+                        this.jumpFrame = 0;
+                        console.log('Pac-Man landing animation complete');
+                    }
+                    return false;
+                }
+
+                let newX = this.x + this.nextDirection[0] * this.speed;
+                let newY = this.y + this.nextDirection[1] * this.speed;
+                if (!this.collidesWithWall(newX, newY, maze)) {
+                    this.direction = [...this.nextDirection];
+                } else {
+                    newX = this.x + this.direction[0] * this.speed;
+                    newY = this.y + this.direction[1] * this.speed;
+                    if (this.collidesWithWall(newX, newY, maze)) {
+                        return false;
+                    }
+                }
+                this.x = newX;
+                this.y = newY;
+                this.frame = (this.frame + 1) % 20;
+                for (let ghost of ghosts) {
+                    if (this.collidesWithGhost(ghost)) {
+                        HONK_SOUND.play().catch(() => console.log('Honk sound failed to play (muted)'));
+                        console.log('Honk sound played on ghost collision');
+                        this.isColliding = true;
+                        this.collisionFrame = 0;
+                        console.log('Pac-Man collision animation started');
+                        return true; // Game over
+                    }
+                }
+                return false;
+            }
+
+            jump(maze, ghosts, pelletPositions) {
+                if (pelletPositions.length === 0) {
+                    console.log('No pellet positions available for jump');
+                    return false;
+                }
+                const safePositions = pelletPositions.filter(([px, py]) => {
+                    return ghosts.every(ghost => {
+                        const tileX = Math.floor(px);
+                        const tileY = Math.floor(py);
+                        const ghostTileX = Math.floor(ghost.x / this.tileSize);
+                        const ghostTileY = Math.floor(ghost.y / this.tileSize);
+                        return Math.abs(tileX - ghostTileX) >= 3 || Math.abs(tileY - ghostTileY) >= 3;
+                    });
+                });
+                if (safePositions.length === 0) {
+                    console.log('No safe positions for jump');
+                    return false;
+                }
+                const randomIndex = Math.floor(Math.random() * safePositions.length);
+                const [newX, newY] = safePositions[randomIndex];
+                this.x = newX * this.tileSize + this.tileSize / 2;
+                this.y = newY * this.tileSize + this.tileSize / 2;
+                this.direction = [0, 0];
+                this.nextDirection = [0, 0];
+                this.speed = 0; // Stationary after jump
+                this.isJumping = true;
+                this.jumpFrame = 0;
+                console.log(`Pac-Man jumped to (${newX}, ${newY}), starting jump animation`);
+                return true;
+            }
+
+            collidesWithWall(x, y, maze) {
+                const tileX = Math.floor(x / this.tileSize);
+                const tileY = Math.floor(y / this.tileSize);
+                return (tileX < 0 || tileX >= maze[0].length ||
+                        tileY < 0 || tileY >= maze.length ||
+                        maze[tileY][tileX] === '#');
+            }
+
+            collidesWithGhost(ghost) {
+                const distance = Math.sqrt((this.x - ghost.x) ** 2 + (this.y - ghost.y) ** 2);
+                return distance < this.radius + ghost.radius;
+            }
+
+            draw() {
+                ctx.save();
+                let offsetX = 0, offsetY = 0;
+                if (this.isColliding) {
+                    const progress = this.collisionFrame / 30; // 0 to 1 over 30 frames
+                    const flash = Math.floor(this.collisionFrame / 5) % 2 === 0; // Flash every 5 frames
+                    offsetX = (Math.random() - 0.5) * 5; // Shake ±5 pixels
+                    offsetY = (Math.random() - 0.5) * 5;
+                    console.log(`Pac-Man collision animation: frame ${this.collisionFrame}, flash ${flash}, shake (${offsetX}, ${offsetY})`);
+                    if (!flash) {
+                        ctx.restore();
+                        return; // Skip drawing for flash effect
+                    }
+                } else if (this.isJumping) {
+                    const progress = this.jumpFrame / 45; // 0 to 1 over 45 frames
+                    const scale = 0.3 + 1.2 * Math.sin(progress * Math.PI) + 0.2 * Math.sin(progress * Math.PI * 3); // 0.3 to 1.5 with bounce
+                    ctx.translate(this.x, this.y);
+                    ctx.scale(scale, scale);
+                    ctx.translate(-this.x, -this.y);
+                    console.log(`Pac-Man jump animation: frame ${this.jumpFrame}, scale ${scale}`);
+                }
+
+                const mouthAngle = Math.PI / 4 * Math.sin(this.frame * Math.PI / 10);
+                let baseAngle;
+                if (this.direction[0] === 1) { // Right
+                    baseAngle = 0;
+                } else if (this.direction[0] === -1) { // Left
+                    baseAngle = Math.PI;
+                } else if (this.direction[1] === 1) { // Down
+                    baseAngle = Math.PI / 2;
+                } else if (this.direction[1] === -1) { // Up
+                    baseAngle = 3 * Math.PI / 2;
+                } else { // Stationary
+                    baseAngle = 0;
+                }
+
+                ctx.beginPath();
+                ctx.arc(this.x + offsetX, this.y + offsetY, this.radius, baseAngle + mouthAngle, baseAngle + 2 * Math.PI - mouthAngle);
+                ctx.lineTo(this.x + offsetX, this.y + offsetY);
+                ctx.fillStyle = YELLOW;
+                ctx.fill();
+                ctx.closePath();
+                ctx.restore();
+            }
+        }
+
+        class Ghost {
+            constructor(x, y, color, tileSize, level) {
+                this.x = x * tileSize;
+                this.y = y * tileSize;
+                this.color = color;
+                this.speed = 1.0; // Slower speed
+                this.radius = tileSize * 0.45; // Unchanged ghost size
+                this.direction = [[1, 0], [-1, 0], [0, 1], [0, -1]][Math.floor(Math.random() * 4)];
+                this.directionHistory = [];
+                this.tileSize = tileSize;
+                this.randomChance = Math.max(0, 0.9 - (level) * 0.05); // 90% on level 1, -5% per level
+                console.log(`Ghost (${color}) initialized with random chance: ${this.randomChance}, speed: ${this.speed}, radius: ${this.radius} for level ${level + 1}`);
+            }
+
+            move(maze, pacman, pellets) {
+                const tileX = this.x / this.tileSize;
+                const tileY = this.y / this.tileSize;
+                const atTileCenter = Math.abs(tileX - Math.round(tileX)) < 0.1 && Math.abs(tileY - Math.round(tileY)) < 0.1;
+
+                if (!atTileCenter) {
+                    const newX = this.x + this.direction[0] * this.speed;
+                    const newY = this.y + this.direction[1] * this.speed;
+                    if (!this.collidesWithWall(newX, newY, maze)) {
+                        this.x = newX;
+                        this.y = newY;
+                    } else {
+                        this.direction = [0, 0];
+                    }
+                    return;
+                }
+
+                const directions = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+                const validDirections = directions.filter(([dx, dy]) => {
+                    const newX = this.x + dx * this.speed;
+                    const newY = this.y + dy * this.speed;
+                    return !this.collidesWithWall(newX, newY, maze);
+                });
+
+                if (validDirections.length === 0) {
+                    console.log(`Ghost at (${tileX}, ${tileY}) stuck: no valid directions`);
+                    return;
+                }
+
+                const now = Date.now();
+                this.directionHistory = this.directionHistory.filter(entry => now - entry.timestamp < 2000);
+                const reversals = this.directionHistory.filter(entry => {
+                    const [dx, dy] = entry.direction;
+                    return dx !== 0 || dy !== 0;
+                }).length;
+
+                let newDirection;
+                if (Math.random() < this.randomChance) { // Level-based random chance
+                    newDirection = validDirections[Math.floor(Math.random() * validDirections.length)];
+                    console.log(`Ghost at (${tileX}, ${tileY}) chose random direction: ${newDirection} (random chance: ${this.randomChance})`);
+                } else {
+                    let minDistance = Infinity;
+                    let bestDirection = this.direction;
+                    for (const [dx, dy] of validDirections) {
+                        const newX = this.x + dx * this.speed;
+                        const newY = this.y + dy * this.speed;
+                        const distance = Math.sqrt((newX - pacman.x) ** 2 + (newY - pacman.y) ** 2);
+                        const isReverse = (dx === -this.direction[0] && dy === -this.direction[1]);
+                        if (distance < minDistance && !(isReverse && reversals >= 2)) {
+                            minDistance = distance;
+                            bestDirection = [dx, dy];
+                        }
+                    }
+                    newDirection = minDistance < Infinity ? bestDirection : validDirections[Math.floor(Math.random() * validDirections.length)];
+                    console.log(`Ghost at (${tileX}, ${tileY}) chasing Pac-Man at (${pacman.x/this.tileSize}, ${pacman.y/this.tileSize}), direction: ${newDirection} (random chance: ${this.randomChance})`);
+                }
+
+                if (newDirection[0] !== this.direction[0] || newDirection[1] !== this.direction[1]) {
+                    this.directionHistory.push({ direction: newDirection, timestamp: now });
+                }
+                this.direction = newDirection;
+                this.x += this.direction[0] * this.speed;
+                this.y += this.direction[1] * this.speed;
+            }
+
+            collidesWithWall(x, y, maze) {
+                const tileX = Math.floor(x / this.tileSize);
+                const tileY = Math.floor(y / this.tileSize);
+                return (tileX < 0 || tileX >= maze[0].length ||
+                        tileY < 0 || tileY >= maze.length ||
+                        maze[tileY][tileX] === '#');
+            }
+
+            draw() {
+                ctx.beginPath();
+                ctx.arc(this.x, this.y - this.radius / 2, this.radius, Math.PI, 2 * Math.PI);
+                ctx.lineTo(this.x + this.radius, this.y + this.radius / 2);
+                ctx.quadraticCurveTo(this.x + this.radius / 2, this.y + this.radius, this.x, this.y + this.radius / 2);
+                ctx.quadraticCurveTo(this.x - this.radius / 2, this.y + this.radius, this.x - this.radius, this.y + this.radius / 2);
+                ctx.lineTo(this.x - this.radius, this.y - this.radius / 2);
+                ctx.closePath();
+                ctx.fillStyle = this.color;
+                ctx.fill();
+
+                const eyeOffsetX = this.direction[0] * this.radius / 3;
+                const eyeOffsetY = this.direction[1] * this.radius / 3 - this.radius / 3;
+                ctx.beginPath();
+                ctx.arc(this.x - this.radius / 2 + eyeOffsetX, this.y - this.radius / 2 + eyeOffsetY, this.radius / 4, 0, Math.PI * 2);
+                ctx.arc(this.x + this.radius / 2 + eyeOffsetX, this.y - this.radius / 2 + eyeOffsetY, this.radius / 4, 0, Math.PI * 2);
+                ctx.fillStyle = WHITE;
+                ctx.fill();
+                ctx.beginPath();
+                ctx.arc(this.x - this.radius / 2 + eyeOffsetX, this.y - this.radius / 2 + eyeOffsetY, this.radius / 8, 0, Math.PI * 2);
+                ctx.arc(this.x + this.radius / 2 + eyeOffsetX, this.y - this.radius / 2 + eyeOffsetY, this.radius / 8, 0, Math.PI * 2);
+                ctx.fillStyle = BLACK;
+                ctx.fill();
+            }
+        }
+
+        class Game {
+            constructor() {
+                this.maze = MAZE.map(row => row.split(''));
+                this.tileSize = Math.min(SCREEN_WIDTH / this.maze[0].length, SCREEN_HEIGHT / this.maze.length);
+                console.log(`Maze size: ${this.maze[0].length}x${this.maze.length}, TILE_SIZE: ${this.tileSize}`);
+                this.pacman = new PacMan(1, 1, this.tileSize);
+                this.ghosts = [];
+                this.pellets = [];
+                this.pelletPositions = [];
+                this.score = 0;
+                this.gameOver = false;
+                this.level = 0;
+                this.jumpsLeft = 3; // Initialize jumps per level
+                // Initialize sounds
+                CHOMP_SOUND.muted = true;
+                HONK_SOUND.muted = true;
+                document.addEventListener('touchstart', () => {
+                    CHOMP_SOUND.muted = false;
+                    HONK_SOUND.muted = false;
+                    CHOMP_SOUND.play().catch(() => console.log('Chomp sound init failed'));
+                    HONK_SOUND.play().catch(() => console.log('Honk sound init failed'));
+                }, { once: true });
+                document.addEventListener('click', () => {
+                    CHOMP_SOUND.muted = false;
+                    HONK_SOUND.muted = false;
+                    CHOMP_SOUND.play().catch(() => console.log('Chomp sound init failed'));
+                    HONK_SOUND.play().catch(() => console.log('Honk sound init failed'));
+                }, { once: true });
+                this.loadLevel();
+                this.handleInput();
+            }
+
+            handleInput() {
+                const jumpBtn = document.getElementById('jumpBtn');
+                const dpadUp = document.getElementById('dpadUp');
+                const dpadDown = document.getElementById('dpadDown');
+                const dpadLeft = document.getElementById('dpadLeft');
+                const dpadRight = document.getElementById('dpadRight');
+
+                let activeDirection = null; // Track active D-pad button
+
+                const setDirection = (direction, element, isActive) => {
+                    if (isActive) {
+                        activeDirection = direction;
+                        this.pacman.nextDirection = direction;
+                        this.pacman.speed = this.pacman.baseSpeed; // Fixed speed when moving
+                        element.classList.add('active');
+                        console.log(`D-pad pressed: direction (${direction[0]}, ${direction[1]}), speed ${this.pacman.speed}`);
+                    } else if (activeDirection && activeDirection[0] === direction[0] && activeDirection[1] === direction[1]) {
+                        activeDirection = null;
+                        this.pacman.nextDirection = [0, 0];
+                        this.pacman.speed = 0; // Stationary when no button pressed
+                        element.classList.remove('active');
+                        console.log(`D-pad released: direction (0, 0), speed ${this.pacman.speed}`);
+                    }
+                };
+
+                // Touch events for D-pad
+                dpadUp.addEventListener('touchstart', (e) => {
+                    e.preventDefault();
+                    setDirection([0, -1], dpadUp, true);
+                });
+                dpadUp.addEventListener('touchend', (e) => {
+                    e.preventDefault();
+                    setDirection([0, -1], dpadUp, false);
+                });
+                dpadDown.addEventListener('touchstart', (e) => {
+                    e.preventDefault();
+                    setDirection([0, 1], dpadDown, true);
+                });
+                dpadDown.addEventListener('touchend', (e) => {
+                    e.preventDefault();
+                    setDirection([0, 1], dpadDown, false);
+                });
+                dpadLeft.addEventListener('touchstart', (e) => {
+                    e.preventDefault();
+                    setDirection([-1, 0], dpadLeft, true);
+                });
+                dpadLeft.addEventListener('touchend', (e) => {
+                    e.preventDefault();
+                    setDirection([-1, 0], dpadLeft, false);
+                });
+                dpadRight.addEventListener('touchstart', (e) => {
+                    e.preventDefault();
+                    setDirection([1, 0], dpadRight, true);
+                });
+                dpadRight.addEventListener('touchend', (e) => {
+                    e.preventDefault();
+                    setDirection([1, 0], dpadRight, false);
+                });
+
+                // Click events for desktop testing
+                dpadUp.addEventListener('mousedown', () => setDirection([0, -1], dpadUp, true));
+                dpadUp.addEventListener('mouseup', () => setDirection([0, -1], dpadUp, false));
+                dpadDown.addEventListener('mousedown', () => setDirection([0, 1], dpadDown, true));
+                dpadDown.addEventListener('mouseup', () => setDirection([0, 1], dpadDown, false));
+                dpadLeft.addEventListener('mousedown', () => setDirection([-1, 0], dpadLeft, true));
+                dpadLeft.addEventListener('mouseup', () => setDirection([-1, 0], dpadLeft, false));
+                dpadRight.addEventListener('mousedown', () => setDirection([1, 0], dpadRight, true));
+                dpadRight.addEventListener('mouseup', () => setDirection([1, 0], dpadRight, false));
+
+                jumpBtn.addEventListener('touchstart', (e) => {
+                    e.preventDefault();
+                    if (this.jumpsLeft > 0) {
+                        console.log('Jump button pressed (touch)');
+                        if (this.pacman.jump(this.maze, this.ghosts, this.pelletPositions)) {
+                            this.jumpsLeft--;
+                            console.log(`Jump used, ${this.jumpsLeft} jumps left`);
+                            jumpBtn.disabled = this.jumpsLeft === 0;
+                        }
+                    }
+                });
+
+                jumpBtn.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    if (this.jumpsLeft > 0) {
+                        console.log('Jump button pressed (click)');
+                        if (this.pacman.jump(this.maze, this.ghosts, this.pelletPositions)) {
+                            this.jumpsLeft--;
+                            console.log(`Jump used, ${this.jumpsLeft} jumps left`);
+                            jumpBtn.disabled = this.jumpsLeft === 0;
+                        }
+                    }
+                });
+
+                document.addEventListener('keydown', (e) => {
+                    if (this.gameOver && e.key === 'r') {
+                        console.log('Restart via keyboard');
+                        this.level = 0;
+                        this.score = 0;
+                        this.gameOver = false;
+                        this.jumpsLeft = 3;
+                        this.loadLevel();
+                    } else {
+                        switch (e.key) {
+                            case 'ArrowUp':
+                                this.pacman.nextDirection = [0, -1];
+                                this.pacman.speed = this.pacman.baseSpeed;
+                                console.log(`Keyboard pressed: direction (0, -1), speed ${this.pacman.speed}`);
+                                break;
+                            case 'ArrowDown':
+                                this.pacman.nextDirection = [0, 1];
+                                this.pacman.speed = this.pacman.baseSpeed;
+                                console.log(`Keyboard pressed: direction (0, 1), speed ${this.pacman.speed}`);
+                                break;
+                            case 'ArrowLeft':
+                                this.pacman.nextDirection = [-1, 0];
+                                this.pacman.speed = this.pacman.baseSpeed;
+                                console.log(`Keyboard pressed: direction (-1, 0), speed ${this.pacman.speed}`);
+                                break;
+                            case 'ArrowRight':
+                                this.pacman.nextDirection = [1, 0];
+                                this.pacman.speed = this.pacman.baseSpeed;
+                                console.log(`Keyboard pressed: direction (1, 0), speed ${this.pacman.speed}`);
+                                break;
+                            case ' ': // Spacebar for jump
+                                if (this.jumpsLeft > 0) {
+                                    console.log('Jump via keyboard');
+                                    if (this.pacman.jump(this.maze, this.ghosts, this.pelletPositions)) {
+                                        this.jumpsLeft--;
+                                        console.log(`Jump used, ${this.jumpsLeft} jumps left`);
+                                        jumpBtn.disabled = this.jumpsLeft === 0;
+                                    }
+                                }
+                                break;
+                        }
+                    }
+                });
+
+                document.addEventListener('keyup', (e) => {
+                    if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
+                        this.pacman.nextDirection = [0, 0];
+                        this.pacman.speed = 0;
+                        console.log(`Keyboard released: direction (0, 0), speed ${this.pacman.speed}`);
+                    }
+                });
+
+                document.getElementById('gameCanvas').addEventListener('touchstart', (e) => {
+                    if (this.gameOver) {
+                        e.preventDefault();
+                        console.log('Restart via canvas touch');
+                        this.level = 0;
+                        this.score = 0;
+                        this.gameOver = false;
+                        this.jumpsLeft = 3;
+                        this.loadLevel();
+                    }
+                });
+            }
+
+            loadLevel() {
+                this.maze = MAZE.map(row => row.split(''));
+                this.tileSize = Math.min(SCREEN_WIDTH / this.maze[0].length, SCREEN_HEIGHT / this.maze.length);
+                console.log(`New level: Maze size ${this.maze[0].length}x${this.maze.length}, TILE_SIZE: ${this.tileSize}`);
+                this.pacman = new PacMan(1, 1, this.tileSize);
+                this.pellets = [];
+                this.pelletPositions = [];
+                for (let y = 0; y < this.maze.length; y++) {
+                    for (let x = 0; x < this.maze[y].length; x++) {
+                        if (this.maze[y][x] === '.') {
+                            this.pelletPositions.push([x, y]);
+                            this.pellets.push([x * this.tileSize + this.tileSize / 2, y * this.tileSize + this.tileSize / 2]);
+                        }
+                    }
+                }
+                const ghostColors = [RED, BLUE, PINK, CYAN];
+                this.ghosts = [];
+                const usedPositions = new Set();
+                for (let i = 0; i < 4; i++) {
+                    if (this.pelletPositions.length === 0) {
+                        console.log('Not enough pellets for ghost starting positions');
+                        break;
+                    }
+                    const randomIndex = Math.floor(Math.random() * this.pelletPositions.length);
+                    const [x, y] = this.pelletPositions[randomIndex];
+                    const positionKey = `${x},${y}`;
+                    if (!usedPositions.has(positionKey)) {
+                        this.ghosts.push(new Ghost(x, y, ghostColors[i], this.tileSize, this.level));
+                        usedPositions.add(positionKey);
+                        console.log(`Ghost ${i + 1} (${ghostColors[i]}) starting at (${x}, ${y})`);
+                        this.pelletPositions.splice(randomIndex, 1);
+                    } else {
+                        i--;
+                    }
+                }
+                this.jumpsLeft = 3;
+                document.getElementById('jumpBtn').disabled = false;
+                console.log(`Level ${this.level + 1} started with ${this.jumpsLeft} jumps available`);
+            }
+
+            update() {
+                if (this.gameOver) return;
+                if (this.pacman.move(this.maze, this.ghosts)) {
+                    this.gameOver = true;
+                }
+                for (let ghost of this.ghosts) {
+                    ghost.move(this.maze, this.pacman, this.pellets);
+                }
+                const pacmanCenter = [this.pacman.x, this.pacman.y];
+                this.pellets = this.pellets.filter(([px, py]) => {
+                    const distance = Math.sqrt((pacmanCenter[0] - px) ** 2 + (pacmanCenter[1] - py) ** 2);
+                    if (distance < this.pacman.radius) {
+                        this.score += 10;
+                        const tileX = Math.floor(px / this.tileSize);
+                        const tileY = Math.floor(py / this.tileSize);
+                        this.maze[tileY][tileX] = ' ';
+                        this.pelletPositions = this.pelletPositions.filter(([x, y]) => x !== tileX || y !== tileY);
+                        CHOMP_SOUND.play().catch(() => console.log('Chomp sound failed to play (muted)'));
+                        console.log('Chomp sound played on pellet');
+                        return false;
+                    }
+                    return true;
+                });
+                if (this.pellets.length === 0) {
+                    this.level += 1;
+                    this.loadLevel();
+                }
+            }
+
+            draw() {
+                ctx.fillStyle = BLACK;
+                ctx.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
+                for (let y = 0; y < this.maze.length; y++) {
+                    for (let x = 0; x < this.maze[y].length; x++) {
+                        if (this.maze[y][x] === '#') {
+                            ctx.fillStyle = BLUE;
+                            ctx.fillRect(x * this.tileSize, y * this.tileSize, this.tileSize, this.tileSize);
+                        } else if (this.maze[y][x] === '.') {
+                            ctx.beginPath();
+                            ctx.arc(x * this.tileSize + this.tileSize / 2, y * this.tileSize + this.tileSize / 2, this.tileSize / 6, 0, Math.PI * 2);
+                            ctx.fillStyle = WHITE;
+                            ctx.fill();
+                            ctx.closePath();
+                        }
+                    }
+                }
+                this.pacman.draw();
+                for (let ghost of this.ghosts) {
+                    ghost.draw();
+                }
+                ctx.font = '18px Arial';
+                ctx.fillStyle = WHITE;
+                ctx.fillText(`Score: ${this.score}`, 10, SCREEN_HEIGHT - 60);
+                ctx.fillText(`Level: ${this.level + 1}`, 10, SCREEN_HEIGHT - 40);
+                ctx.fillText(`Jumps: ${this.jumpsLeft}`, 10, SCREEN_HEIGHT - 20);
+                if (this.gameOver) {
+                    ctx.fillText('Game Over! Tap to Restart', SCREEN_WIDTH / 2 - 80, SCREEN_HEIGHT / 2);
+                }
+            }
+        }
+
+        const game = new Game();
+        function gameLoop() {
+            game.update();
+            game.draw();
+            setTimeout(gameLoop, 1000 / FPS);
+        }
+        gameLoop();
+    </script>
+</body>
+</html>
